@@ -1,7 +1,17 @@
+import threading
 import tkinter
 import cv2
 from PIL import Image,ImageTk
 import time 
+import face_recognition
+import pymongo
+import numpy
+import logging
+from concurrent.futures import ThreadPoolExecutor
+import sys
+import asyncio
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+logger = logging.getLogger(__name__) 
 
 class Application:
     def __init__(self,window,window_title,video_source=0):
@@ -9,6 +19,14 @@ class Application:
             self.window.title(window_title)
             self.video_source = video_source
             self.video = VideoCapture(0)
+            # Database and generation of known images
+            self.mongoclient = pymongo.MongoClient("mongodb://localhost:27017/")
+            self.known_encodings_collection = self.mongoclient["biometrics"]["faces"]
+            self.list_user_companyID = []
+            self.list_face_encodings = []
+            self._reestablish_faces()
+            self.executor = ThreadPoolExecutor(max_workers=2)
+            self.identificator = PersonIdentification()
             self.leftFrame = tkinter.Frame(window)
             self.leftFrame.pack(side=tkinter.LEFT)
             self.rightFrame = tkinter.Frame(window)
@@ -17,14 +35,12 @@ class Application:
             self.bottomFrame.pack(side=tkinter.BOTTOM)
             self.canvas = tkinter.Canvas(self.leftFrame,width=self.video.width,height=self.video.height)
             self.canvas.pack()
-            #self.btn_snapshot = tkinter.Button(window,text="Snapshot",width=50,command=self.takeSnapshot)
-            #self.btn_snapshot.pack(anchor=tkinter.CENTER,expand=True)
-            self.btn_snapshot = tkinter.Button(self.bottomFrame,text="Take photo",width=50,command=self.takePicture)
-            self.btn_snapshot.pack(expand=True)
+            self.testFrame = True
             self.delay = 1
             self.listOfImages = {}
             self.currentImage = None
             self.timeForCurrentImage = 0
+            self.counter = 0
             self.update()
             self.window.mainloop()
             
@@ -34,27 +50,31 @@ class Application:
             if ret:
                 self.photo = ImageTk.PhotoImage(image=Image.fromarray(frame))
                 self.canvas.create_image(0,0,image=self.photo,anchor=tkinter.NW)
+                # Test user against known encodings
+                if self._test_face():
+                    # Future executing
+                    self.executor.submit(self.identificator.run,frame,self.list_user_companyID,self.list_face_encodings)
         else:
             self.canvas.create_image(0,0,image=self.currentImage,anchor=tkinter.NW)
         self.window.after(self.delay,self.update)
     
-    def takeSnapshot(self):
-        ret, frame = self.video.get_frame()    
-        if ret:
-            cv2.imwrite("frame-" + time.strftime("%d-%m-%Y-%H-%M-%S") + ".jpg", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    def _reestablish_faces(self):
+        # Obtain all users and concatenate their face encodings
+        logger.info("Updating face model")
+        collection_cursor = self.known_encodings_collection.find({})
+        for user in collection_cursor:
+            self.list_user_companyID.append(user["companyID"])
+            for encoding in user["face_encodings"]:
+                self.list_face_encodings.append(encoding)
     
-    def takePicture(self):
-        ret, frame = self.video.get_frame()    
-        if ret:
-            numberOfCaptureImages = len(self.listOfImages.keys())
-            btn_image = tkinter.Button(self.rightFrame,text=f"Image timestamp {str(int(time.time()))}",width=50,command = lambda: self.showImage(numberOfCaptureImages))
-            btn_image.pack()
-            self.listOfImages[numberOfCaptureImages] = frame
-    
-    def showImage(self,imageIndex):
-        imageArray = self.listOfImages[imageIndex]
-        self.currentImage = ImageTk.PhotoImage(image=Image.fromarray(imageArray))
-        self.timeForCurrentImage = int(time.time())+5
+    def _test_face(self):
+        # Test frame every 5 frames to avoid creating video lag
+        if self.counter==5:
+            self.counter=0
+            return True
+        else:
+            self.counter+=1
+            return False
             
 class VideoCapture:
     def __init__(self,video_source=0):
@@ -74,6 +94,26 @@ class VideoCapture:
             if ret:
                 return (ret,cv2.cvtColor(frame,cv2.COLOR_BGR2RGB))
             else:
-                return (ret,None)    
+                return (ret,None)
+
+class PersonIdentification:
+    def run(self,unknown_face,list_user_companyID,list_face_encodings):
+        unknown_face = face_recognition.face_encodings(unknown_face)
+        if unknown_face:
+            # Transform face encodings to ndarray
+            known_encodings = numpy.array(list_face_encodings)
+            matches = face_recognition.compare_faces(known_encodings,unknown_face,tolerance=0.54)
+            companyID = "Unknown"
+            face_distances = face_recognition.face_distance(known_encodings,unknown_face)
+            best_match_index = numpy.argmin(face_distances)
+            if matches[best_match_index]:
+                # Each company user has 10 saved face encodings so we do a floor division to obtain the user index
+                companyID = list_user_companyID[best_match_index//10]
+                logger.info(f"Current face matches with user of companyID: {companyID}")
+            else:
+                logger.info(f"Current face doesn't match any user")
+        else:
+            logger.info("No face was currently detected")
+        
 
 Application(tkinter.Tk(),"Tkinter and Opencv")
