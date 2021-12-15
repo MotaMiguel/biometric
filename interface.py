@@ -62,10 +62,11 @@ class Application:
         # Obtain all users and concatenate their face encodings
         logger.info("Updating face model")
         collection_cursor = self.known_encodings_collection.find({})
-        for user in collection_cursor:
-            self.list_user_companyID.append(user["companyID"])
-            for encoding in user["face_encodings"]:
-                self.list_face_encodings.append(encoding)
+        if collection_cursor:
+            for user in collection_cursor:
+                self.list_user_companyID.append(user["companyID"])
+                for encoding in user["face_encodings"]:
+                    self.list_face_encodings.append(encoding)
     
     def _test_face(self):
         # Test frame every 5 frames to avoid creating video lag
@@ -99,6 +100,7 @@ class VideoCapture:
 class PersonIdentification:
     def run(self,unknown_face,list_user_companyID,list_face_encodings):
         unknown_face = face_recognition.face_encodings(unknown_face)
+        logger.info(f"Image encoding {unknown_face}")
         if unknown_face:
             # Transform face encodings to ndarray
             known_encodings = numpy.array(list_face_encodings)
