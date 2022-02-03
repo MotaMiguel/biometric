@@ -1,0 +1,5 @@
+opencv-python
+pillow
+face-recognition
+pymongo
+adafruit-circuitpython-fingerprint
